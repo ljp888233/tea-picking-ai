@@ -6,3 +6,4 @@ pandas>=2.0.0
 plotly>=5.18.0
 Pillow>=10.0.0
 av>=10.0.0
+mediapipe>=0.10.0
