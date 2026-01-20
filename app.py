@@ -384,7 +384,7 @@ def render_experience_mode(user_name, show_pose, show_hands, show_fps):
             st.info("等待检测手部动作...")
 
         # 自动刷新：当视频流活跃时
-        if ctx.state.playing:
+        if ctx.state and ctx.state.playing:
             time.sleep(0.5)
             st.rerun()
         else:
@@ -463,7 +463,7 @@ def render_efficiency_mode(user_name, show_pose, show_hands, show_fps):
             st.info("等待检测手部动作...")
 
         # 自动刷新：当视频流活跃时
-        if ctx.state.playing:
+        if ctx.state and ctx.state.playing:
             time.sleep(0.5)
             st.rerun()
         else:
@@ -535,7 +535,7 @@ def render_quality_mode(user_name, show_pose, show_hands, show_fps):
         """)
 
         # 自动刷新：当视频流活跃时
-        if ctx.state.playing:
+        if ctx.state and ctx.state.playing:
             time.sleep(0.5)
             st.rerun()
         else:
@@ -622,7 +622,7 @@ def render_teaching_mode(user_name, show_pose, show_hands, show_fps):
         st.progress(progress_pct, text=f"掌握程度: {int(progress_pct*100)}%")
 
         # 自动刷新：当视频流活跃时
-        if ctx.state.playing:
+        if ctx.state and ctx.state.playing:
             time.sleep(0.5)
             st.rerun()
         else:
