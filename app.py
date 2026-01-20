@@ -52,18 +52,42 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+def get_score_level_en(score):
+    """根据分数返回英文等级（用于视频显示）"""
+    if score >= 90:
+        return "Master"
+    elif score >= 80:
+        return "Expert"
+    elif score >= 70:
+        return "Skilled"
+    elif score >= 60:
+        return "Learner"
+    elif score >= 40:
+        return "Beginner"
+    else:
+        return "Newbie"
+
+
 class VideoProcessor:
     """视频处理器 - 处理每一帧并进行动作分析"""
     lock = threading.Lock()
-    score = 0
-    feedback = []
-    stats = {'pick_count': 0, 'current_score': 0, 'average_score': 0, 'total_actions': 0}
-    start_time = time.time()
-    scores_history = []
+    # 使用共享字典存储数据
+    shared_data = {
+        'score': 0,
+        'feedback': [],
+        'stats': {'pick_count': 0, 'current_score': 0, 'average_score': 0, 'total_actions': 0},
+        'scores_history': [],
+        'start_time': time.time(),
+        'last_update': 0
+    }
 
     def __init__(self):
         self.pose_detector = PoseDetector()
-        self.hand_detector = HandDetector()
+        # 降低检测置信度，更容易检测到手
+        self.hand_detector = HandDetector(
+            min_detection_confidence=0.3,
+            min_tracking_confidence=0.3
+        )
         self.analyzer = TeaPickingAnalyzer()
         self.show_pose = True
         self.show_hands = True
@@ -71,6 +95,7 @@ class VideoProcessor:
         self.fps = 0
         self.frame_count = 0
         self.fps_time = time.time()
+        self._last_feedback = []  # 保存最新反馈
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
@@ -88,19 +113,34 @@ class VideoProcessor:
 
         # 分析手部动作
         hands_data = self.hand_detector.get_all_hands()
+        hand_count = len(hands_data)
+
+        # 在画面上显示手部检测状态
+        cv2.putText(img, f"Hands: {hand_count}", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+
         if hands_data:
             result = self.analyzer.analyze_hand(
                 hands_data[0]['landmarks'],
                 hands_data[0]['handedness']
             )
+            # 保存反馈到实例变量
+            self._last_feedback = result['feedback'].copy()
+
             with VideoProcessor.lock:
-                VideoProcessor.score = result['score']
-                VideoProcessor.feedback = result['feedback']
-                VideoProcessor.stats = self.analyzer.get_statistics()
-                if result['score'] > 0 and (len(VideoProcessor.scores_history) == 0 or VideoProcessor.scores_history[-1] != result['score']):
-                    VideoProcessor.scores_history.append(result['score'])
-                    if len(VideoProcessor.scores_history) > 100:
-                        VideoProcessor.scores_history = VideoProcessor.scores_history[-100:]
+                VideoProcessor.shared_data['score'] = result['score']
+                VideoProcessor.shared_data['feedback'] = result['feedback'].copy()
+                VideoProcessor.shared_data['stats'] = self.analyzer.get_statistics()
+                VideoProcessor.shared_data['last_update'] = time.time()
+                if result['score'] > 0:
+                    history = VideoProcessor.shared_data['scores_history']
+                    if len(history) == 0 or history[-1] != result['score']:
+                        history.append(result['score'])
+                        if len(history) > 100:
+                            VideoProcessor.shared_data['scores_history'] = history[-100:]
+
+            # 显示捏取距离
+            cv2.putText(img, f"Pinch: {result['pinch_distance']:.3f}", (10, 180), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+            cv2.putText(img, f"Picking: {result['is_pinching']}", (10, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
         # FPS计算
         self.frame_count += 1
@@ -113,11 +153,11 @@ class VideoProcessor:
         if self.show_fps:
             cv2.putText(img, f"FPS: {self.fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-        score_color = get_score_color(VideoProcessor.score)
-        cv2.putText(img, f"Score: {VideoProcessor.score}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.2, score_color, 2)
+        score_color = get_score_color(VideoProcessor.shared_data['score'])
+        cv2.putText(img, f"Score: {VideoProcessor.shared_data['score']}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.2, score_color, 2)
 
         # 显示等级
-        level = get_score_level(VideoProcessor.score)
+        level = get_score_level_en(VideoProcessor.shared_data['score'])
         cv2.putText(img, level, (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 165, 0), 2)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
@@ -131,19 +171,25 @@ def rgb_to_hex(bgr):
 def reset_stats():
     """重置统计数据"""
     with VideoProcessor.lock:
-        VideoProcessor.score = 0
-        VideoProcessor.feedback = []
-        VideoProcessor.stats = {'pick_count': 0, 'current_score': 0, 'average_score': 0, 'total_actions': 0}
-        VideoProcessor.start_time = time.time()
-        VideoProcessor.scores_history = []
+        VideoProcessor.shared_data['score'] = 0
+        VideoProcessor.shared_data['feedback'] = []
+        VideoProcessor.shared_data['stats'] = {'pick_count': 0, 'current_score': 0, 'average_score': 0, 'total_actions': 0}
+        VideoProcessor.shared_data['start_time'] = time.time()
+        VideoProcessor.shared_data['scores_history'] = []
 
 
-def export_score_card(user_name, mode):
-    """导出成绩卡片"""
-    with VideoProcessor.lock:
-        stats = VideoProcessor.stats.copy()
-        scores_history = VideoProcessor.scores_history.copy()
-        score = VideoProcessor.score
+def export_score_card(user_name, ctx):
+    """导出成绩卡片 - 从视频处理器实例获取数据"""
+    # 从视频处理器实例获取数据
+    stats = {'pick_count': 0, 'current_score': 0, 'average_score': 0, 'total_actions': 0}
+    score = 0
+    scores_history = []
+
+    if ctx and ctx.video_processor and hasattr(ctx.video_processor, 'analyzer'):
+        analyzer = ctx.video_processor.analyzer
+        score = int(analyzer.current_score)
+        stats = analyzer.get_statistics()
+        scores_history = getattr(analyzer, 'scores_history', [])
 
     if not user_name:
         st.warning("⚠️ 请先在侧边栏输入您的姓名！")
@@ -209,14 +255,14 @@ def export_score_card(user_name, mode):
     draw.text((width//2, 650), "最近得分记录", font=small_font, fill='#666666', anchor='mm')
     if scores_history:
         recent = scores_history[-5:]
-        draw.text((width//2, 690), " → ".join([str(s) for s in recent]), font=small_font, fill='#333333', anchor='mm')
+        draw.text((width//2, 690), " → ".join([f"{s:.3f}" for s in recent]), font=small_font, fill='#333333', anchor='mm')
     else:
         draw.text((width//2, 690), "暂无记录", font=small_font, fill='#999999', anchor='mm')
 
     draw.text((width//2, 760), "© 2026 智茶AI", font=small_font, fill='#999999', anchor='mm')
 
     # 保存
-    filename = f"{user_name}_{mode}_{timestamp}.png"
+    filename = f"{user_name}_efficiency_{timestamp}.png"
     filepath = os.path.join(data_dir, filename)
     img.save(filepath, 'PNG')
     st.image(img, caption=f"🎴 {user_name} 的成绩卡", use_container_width=False)
@@ -277,7 +323,7 @@ def render_experience_mode(user_name, show_pose, show_hands, show_fps):
         st.subheader("📹 实时画面")
         st.info("👆 点击 START 开启摄像头，首次使用请允许浏览器访问摄像头权限")
 
-        webrtc_streamer(
+        ctx = webrtc_streamer(
             key="experience",
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTC_CONFIGURATION,
@@ -286,18 +332,27 @@ def render_experience_mode(user_name, show_pose, show_hands, show_fps):
             async_processing=True,
         )
 
-        if st.button("🎴 生成成绩卡", use_container_width=True, key="exp_export"):
-            export_score_card(user_name, "experience")
-
     with col2:
         st.subheader("🏆 实时成绩")
-        with VideoProcessor.lock:
-            score = VideoProcessor.score
-            stats = VideoProcessor.stats.copy()
 
-        score_color = rgb_to_hex(get_score_color(score))
-        st.markdown(f'<p class="score-display" style="color:{score_color}">{score}</p>', unsafe_allow_html=True)
-        st.markdown(f'<p style="text-align:center;font-size:1.5rem;">{get_score_level(score)}</p>', unsafe_allow_html=True)
+        # 从视频处理器实例获取数据
+        score = 0
+        stats = {'pick_count': 0, 'current_score': 0, 'average_score': 0, 'total_actions': 0}
+        feedback = []
+
+        if ctx.video_processor:
+            score = getattr(ctx.video_processor, 'analyzer', None)
+            if score and hasattr(score, 'current_score'):
+                analyzer = ctx.video_processor.analyzer
+                score = int(analyzer.current_score)
+                stats = analyzer.get_statistics()
+                feedback = getattr(ctx.video_processor, '_last_feedback', [])
+            else:
+                score = 0
+
+        score_color = rgb_to_hex(get_score_color(int(score)))
+        st.markdown(f'<p class="score-display" style="color:{score_color}">{int(score)}</p>', unsafe_allow_html=True)
+        st.markdown(f'<p style="text-align:center;font-size:1.5rem;">{get_score_level(int(score))}</p>', unsafe_allow_html=True)
 
         st.divider()
         st.subheader("🎖️ 成就徽章")
@@ -322,13 +377,19 @@ def render_experience_mode(user_name, show_pose, show_hands, show_fps):
 
         st.divider()
         st.subheader("💡 实时反馈")
-        with VideoProcessor.lock:
-            feedback = VideoProcessor.feedback.copy()
         if feedback:
             for fb in feedback:
                 st.markdown(f'<div class="feedback-item">{fb}</div>', unsafe_allow_html=True)
         else:
             st.info("等待检测手部动作...")
+
+        # 自动刷新：当视频流活跃时
+        if ctx.state.playing:
+            time.sleep(0.5)
+            st.rerun()
+        else:
+            if st.button("🔄 刷新数据", key="refresh_exp", use_container_width=True):
+                st.rerun()
 
 
 
@@ -342,7 +403,7 @@ def render_efficiency_mode(user_name, show_pose, show_hands, show_fps):
         st.subheader("📹 实时监控")
         st.info("👆 点击 START 开启摄像头")
 
-        webrtc_streamer(
+        ctx = webrtc_streamer(
             key="efficiency",
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTC_CONFIGURATION,
@@ -352,14 +413,23 @@ def render_efficiency_mode(user_name, show_pose, show_hands, show_fps):
         )
 
         if st.button("🎴 生成成绩卡", use_container_width=True, key="eff_export"):
-            export_score_card(user_name, "efficiency")
+            export_score_card(user_name, ctx)
 
     with col2:
         st.subheader("⏱️ 效率数据")
 
-        with VideoProcessor.lock:
-            stats = VideoProcessor.stats.copy()
-            elapsed = time.time() - VideoProcessor.start_time
+        # 从视频处理器实例获取数据
+        stats = {'pick_count': 0, 'current_score': 0, 'average_score': 0, 'total_actions': 0}
+        feedback = []
+        elapsed = 0
+
+        if ctx.video_processor and hasattr(ctx.video_processor, 'analyzer'):
+            analyzer = ctx.video_processor.analyzer
+            stats = analyzer.get_statistics()
+            feedback = getattr(ctx.video_processor, '_last_feedback', [])
+            elapsed = time.time() - getattr(ctx.video_processor, 'fps_time', time.time())
+
+        speed = stats.get('pick_count', 0) / (elapsed / 60) if elapsed > 60 else stats.get('pick_count', 0)
 
         col_a, col_b = st.columns(2)
         with col_a:
@@ -367,7 +437,6 @@ def render_efficiency_mode(user_name, show_pose, show_hands, show_fps):
             st.markdown(f'<p class="big-number">{stats.get("pick_count", 0)}</p>', unsafe_allow_html=True)
         with col_b:
             st.markdown("**每分钟速度**")
-            speed = stats.get('pick_count', 0) / (elapsed / 60) if elapsed > 0 else 0
             st.markdown(f'<p class="big-number">{speed:.1f}</p>', unsafe_allow_html=True)
 
         st.divider()
@@ -376,8 +445,8 @@ def render_efficiency_mode(user_name, show_pose, show_hands, show_fps):
 
         st.divider()
         st.subheader("📋 详细统计")
-        minutes = int(elapsed // 60)
-        seconds = int(elapsed % 60)
+        minutes = int(elapsed // 60) if elapsed > 0 else 0
+        seconds = int(elapsed % 60) if elapsed > 0 else 0
         st.markdown(f"""
         - ⏱️ 已用时间: **{minutes}分{seconds}秒**
         - 🎯 采摘次数: **{stats.get('pick_count', 0)}**
@@ -387,13 +456,19 @@ def render_efficiency_mode(user_name, show_pose, show_hands, show_fps):
 
         st.divider()
         st.subheader("💡 实时反馈")
-        with VideoProcessor.lock:
-            feedback = VideoProcessor.feedback.copy()
         if feedback:
             for fb in feedback:
                 st.markdown(f'<div class="feedback-item">{fb}</div>', unsafe_allow_html=True)
         else:
             st.info("等待检测手部动作...")
+
+        # 自动刷新：当视频流活跃时
+        if ctx.state.playing:
+            time.sleep(0.5)
+            st.rerun()
+        else:
+            if st.button("🔄 刷新数据", key="refresh_eff", use_container_width=True):
+                st.rerun()
 
 
 
@@ -407,7 +482,7 @@ def render_quality_mode(user_name, show_pose, show_hands, show_fps):
         st.subheader("📹 动作监控")
         st.info("👆 点击 START 开启摄像头")
 
-        webrtc_streamer(
+        ctx = webrtc_streamer(
             key="quality",
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTC_CONFIGURATION,
@@ -416,15 +491,19 @@ def render_quality_mode(user_name, show_pose, show_hands, show_fps):
             async_processing=True,
         )
 
-        if st.button("🎴 生成成绩卡", use_container_width=True, key="qc_export"):
-            export_score_card(user_name, "quality")
-
     with col2:
         st.subheader("📋 质量评估")
-        with VideoProcessor.lock:
-            score = VideoProcessor.score
-            stats = VideoProcessor.stats.copy()
-            feedback = VideoProcessor.feedback.copy()
+
+        # 从视频处理器实例获取数据
+        score = 0
+        stats = {'pick_count': 0, 'current_score': 0, 'average_score': 0, 'total_actions': 0}
+        feedback = []
+
+        if ctx.video_processor and hasattr(ctx.video_processor, 'analyzer'):
+            analyzer = ctx.video_processor.analyzer
+            score = int(analyzer.current_score)
+            stats = analyzer.get_statistics()
+            feedback = getattr(ctx.video_processor, '_last_feedback', [])
 
         quality_level = "优秀 ✅" if score >= 80 else "良好 👍" if score >= 60 else "需改进 ⚠️"
         quality_color = "#4caf50" if score >= 80 else "#ff9800" if score >= 60 else "#f44336"
@@ -454,6 +533,14 @@ def render_quality_mode(user_name, show_pose, show_hands, show_fps):
         - 🔢 检测次数: **{stats.get('total_actions', 0)}**
         - 📈 平均得分: **{stats.get('average_score', 0)}**
         """)
+
+        # 自动刷新：当视频流活跃时
+        if ctx.state.playing:
+            time.sleep(0.5)
+            st.rerun()
+        else:
+            if st.button("🔄 刷新数据", key="refresh_qc", use_container_width=True):
+                st.rerun()
 
 
 
@@ -494,7 +581,7 @@ def render_teaching_mode(user_name, show_pose, show_hands, show_fps):
         st.subheader("📹 练习画面")
         st.info("👆 点击 START 开启摄像头")
 
-        webrtc_streamer(
+        ctx = webrtc_streamer(
             key="teaching",
             mode=WebRtcMode.SENDRECV,
             rtc_configuration=RTC_CONFIGURATION,
@@ -503,15 +590,19 @@ def render_teaching_mode(user_name, show_pose, show_hands, show_fps):
             async_processing=True,
         )
 
-        if st.button("🎴 生成成绩卡", use_container_width=True, key="teach_export"):
-            export_score_card(user_name, "teaching")
-
     with col2:
         st.subheader("📝 动作评价")
-        with VideoProcessor.lock:
-            score = VideoProcessor.score
-            stats = VideoProcessor.stats.copy()
-            feedback = VideoProcessor.feedback.copy()
+
+        # 从视频处理器实例获取数据
+        score = 0
+        stats = {'pick_count': 0, 'current_score': 0, 'average_score': 0, 'total_actions': 0}
+        feedback = []
+
+        if ctx.video_processor and hasattr(ctx.video_processor, 'analyzer'):
+            analyzer = ctx.video_processor.analyzer
+            score = int(analyzer.current_score)
+            stats = analyzer.get_statistics()
+            feedback = getattr(ctx.video_processor, '_last_feedback', [])
 
         score_color = rgb_to_hex(get_score_color(score))
         grade = "优秀" if score >= 80 else "良好" if score >= 60 else "继续练习"
@@ -529,6 +620,14 @@ def render_teaching_mode(user_name, show_pose, show_hands, show_fps):
         st.subheader("📈 学习进度")
         progress_pct = min(stats.get('average_score', 0) / 100, 1.0)
         st.progress(progress_pct, text=f"掌握程度: {int(progress_pct*100)}%")
+
+        # 自动刷新：当视频流活跃时
+        if ctx.state.playing:
+            time.sleep(0.5)
+            st.rerun()
+        else:
+            if st.button("🔄 刷新数据", key="refresh_teach", use_container_width=True):
+                st.rerun()
 
 
 if __name__ == "__main__":
