@@ -3,10 +3,15 @@
 """
 import cv2
 
+MEDIAPIPE_AVAILABLE = False
+mp = None
+
 try:
     import mediapipe as mp
+    # 测试 solutions 是否可用
+    _ = mp.solutions.pose
     MEDIAPIPE_AVAILABLE = True
-except ImportError:
+except (ImportError, AttributeError):
     MEDIAPIPE_AVAILABLE = False
 
 
@@ -28,23 +33,28 @@ class PoseDetector:
             min_tracking_confidence: 最小跟踪置信度
         """
         self.results = None
+        self.mp_pose = None
+        self.mp_draw = None
+        self.mp_drawing_styles = None
+        self.pose = None
 
         if MEDIAPIPE_AVAILABLE:
-            self.mp_pose = mp.solutions.pose
-            self.mp_draw = mp.solutions.drawing_utils
-            self.mp_drawing_styles = mp.solutions.drawing_styles
+            try:
+                self.mp_pose = mp.solutions.pose
+                self.mp_draw = mp.solutions.drawing_utils
+                self.mp_drawing_styles = mp.solutions.drawing_styles
 
-            self.pose = self.mp_pose.Pose(
-                static_image_mode=static_image_mode,
-                model_complexity=model_complexity,
-                min_detection_confidence=min_detection_confidence,
-                min_tracking_confidence=min_tracking_confidence
-            )
-        else:
-            self.mp_pose = None
-            self.mp_draw = None
-            self.mp_drawing_styles = None
-            self.pose = None
+                self.pose = self.mp_pose.Pose(
+                    static_image_mode=static_image_mode,
+                    model_complexity=model_complexity,
+                    min_detection_confidence=min_detection_confidence,
+                    min_tracking_confidence=min_tracking_confidence
+                )
+            except Exception:
+                self.mp_pose = None
+                self.mp_draw = None
+                self.mp_drawing_styles = None
+                self.pose = None
 
     def detect(self, frame):
         """
@@ -133,3 +143,4 @@ class PoseDetector:
         """释放资源"""
         if self.pose:
             self.pose.close()
+
