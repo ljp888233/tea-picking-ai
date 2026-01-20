@@ -215,14 +215,29 @@ def export_score_card(user_name, ctx):
     # 边框
     draw.rectangle([20, 20, width-20, height-20], outline='#2E7D32', width=3)
 
-    # 字体
+    # 字体 - 云端兼容
     try:
+        # 尝试 Windows 字体
         title_font = ImageFont.truetype("msyh.ttc", 36)
         large_font = ImageFont.truetype("msyh.ttc", 48)
         normal_font = ImageFont.truetype("msyh.ttc", 24)
         small_font = ImageFont.truetype("msyh.ttc", 18)
     except:
-        title_font = large_font = normal_font = small_font = ImageFont.load_default()
+        try:
+            # 尝试 Linux 中文字体
+            title_font = ImageFont.truetype("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 36)
+            large_font = ImageFont.truetype("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 48)
+            normal_font = ImageFont.truetype("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 24)
+            small_font = ImageFont.truetype("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 18)
+        except:
+            try:
+                # 尝试 DejaVu 字体
+                title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 36)
+                large_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 48)
+                normal_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
+                small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
+            except:
+                title_font = large_font = normal_font = small_font = ImageFont.load_default()
 
     # 标题
     draw.text((width//2, 60), "智茶AI", font=title_font, fill='#1B5E20', anchor='mm')
