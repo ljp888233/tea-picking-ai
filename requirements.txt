@@ -2,7 +2,6 @@
 # Tea Picking AI - Dependencies
 
 # 核心AI库
-mediapipe==0.10.3
 opencv-python-headless>=4.8.0
 
 # Web界面
