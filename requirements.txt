@@ -3,7 +3,7 @@
 
 # 核心AI库
 opencv-python-headless>=4.8.0
-mediapipe>=0.10.0
+mediapipe>=0.10.9
 
 # Web界面
 streamlit>=1.28.0
