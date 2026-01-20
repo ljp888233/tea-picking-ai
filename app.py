@@ -115,6 +115,13 @@ class VideoProcessor:
         hands_data = self.hand_detector.get_all_hands()
         hand_count = len(hands_data)
 
+        # 显示 MediaPipe 状态（调试用）
+        from core.hand_detector import MEDIAPIPE_AVAILABLE
+        import sys
+        py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+        mp_status = "ON" if MEDIAPIPE_AVAILABLE else "OFF"
+        cv2.putText(img, f"Python: {py_version} | MediaPipe: {mp_status}", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
         # 在画面上显示手部检测状态
         cv2.putText(img, f"Hands: {hand_count}", (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
