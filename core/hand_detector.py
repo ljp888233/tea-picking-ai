@@ -4,6 +4,7 @@
 import cv2
 
 MEDIAPIPE_AVAILABLE = False
+MEDIAPIPE_ERROR = ""
 mp = None
 
 try:
@@ -11,7 +12,14 @@ try:
     # 测试 solutions 是否可用
     _ = mp.solutions.hands
     MEDIAPIPE_AVAILABLE = True
-except (ImportError, AttributeError):
+except ImportError as e:
+    MEDIAPIPE_ERROR = f"Import: {str(e)[:50]}"
+    MEDIAPIPE_AVAILABLE = False
+except AttributeError as e:
+    MEDIAPIPE_ERROR = f"Attr: {str(e)[:50]}"
+    MEDIAPIPE_AVAILABLE = False
+except Exception as e:
+    MEDIAPIPE_ERROR = f"Other: {str(e)[:50]}"
     MEDIAPIPE_AVAILABLE = False
 
 
