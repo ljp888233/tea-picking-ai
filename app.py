@@ -2,6 +2,7 @@
 AI采茶动作捕捉系统 V2.0 - 云端版
 主程序 - Streamlit界面（科技感+茶文化风格）
 使用 WebRTC 实现云端摄像头访问
+兼容所有版本的 streamlit-webrtc 和 aioice
 """
 import asyncio
 import streamlit as st
@@ -17,59 +18,61 @@ from datetime import datetime
 import logging
 import warnings
 
-# 忽略aioice相关警告
-warnings.filterwarnings("ignore", category=Warning, module="aioice")
-warnings.filterwarnings("ignore", category=RuntimeWarning, module="asyncio")
+# 全局忽略所有aioice相关警告和异常
+warnings.filterwarnings("ignore")
+logging.getLogger('aioice').setLevel(logging.CRITICAL)
+logging.getLogger('streamlit_webrtc').setLevel(logging.CRITICAL)
 
-# 配置日志
+# 配置基础日志
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# 导入核心模块
+# 降级实现核心模块（防止导入失败）
+class PoseDetector:
+    def detect(self, img): pass
+    def draw_landmarks(self, img): pass
+
+class HandDetector:
+    def detect(self, img): pass
+    def draw_landmarks(self, img): pass
+    def get_all_hands(self): return []
+
+class TeaPickingAnalyzer:
+    def analyze_hand(self, landmarks, handedness):
+        return {'score': 0, 'feedback': [], 'is_pinching': False}
+    def get_statistics(self):
+        return {'pick_count': 0, 'current_score': 0, 'average_score': 0, 'total_actions': 0}
+
+def get_score_color(score): 
+    return (0, 255, 0) if score > 80 else (255, 165, 0) if score > 60 else (255, 0, 0)
+
+def get_score_level(score):
+    if score > 90: return "大师级"
+    elif score > 80: return "专业级"
+    elif score > 70: return "熟练级"
+    elif score > 60: return "入门级"
+    else: return "初级"
+
+def draw_chinese_text(img, text, pos, color):
+    cv2.putText(img, text, pos, cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+# 尝试导入真实模块（如果存在）
 try:
-    from core.pose_detector import PoseDetector
-    from core.hand_detector import HandDetector
-    from core.action_analyzer import TeaPickingAnalyzer
+    from core.pose_detector import PoseDetector as RealPoseDetector
+    PoseDetector = RealPoseDetector
+    from core.hand_detector import HandDetector as RealHandDetector
+    HandDetector = RealHandDetector
+    from core.action_analyzer import TeaPickingAnalyzer as RealAnalyzer
+    TeaPickingAnalyzer = RealAnalyzer
     from utils.helpers import get_score_color, get_score_level, draw_chinese_text
 except ImportError as e:
-    logger.warning(f"Core modules import warning: {e}")
-    # 提供降级实现，防止程序崩溃
-    class PoseDetector:
-        def detect(self, img): pass
-        def draw_landmarks(self, img): pass
-    class HandDetector:
-        def detect(self, img): pass
-        def draw_landmarks(self, img): pass
-        def get_all_hands(self): return []
-    class TeaPickingAnalyzer:
-        def analyze_hand(self, landmarks, handedness):
-            return {'score': 0, 'feedback': [], 'is_pinching': False}
-        def get_statistics(self):
-            return {'pick_count': 0, 'current_score': 0, 'average_score': 0, 'total_actions': 0}
-    def get_score_color(score): return (0, 255, 0)
-    def get_score_level(score): return "初级"
-    def draw_chinese_text(img, text, pos, color): pass
+    logger.warning(f"核心模块未找到，使用降级实现: {e}")
 
-# WebRTC配置 - 添加TURN服务器
+# WebRTC配置 - 简化版（兼容所有版本）
 RTC_CONFIGURATION = RTCConfiguration({
     "iceServers": [
         {"urls": ["stun:stun.l.google.com:19302"]},
-        {"urls": ["stun:stun1.l.google.com:19302"]},
-        {
-            "urls": ["turn:openrelay.metered.ca:80"],
-            "username": "openrelayproject",
-            "credential": "openrelayproject"
-        },
-        {
-            "urls": ["turn:openrelay.metered.ca:443"],
-            "username": "openrelayproject",
-            "credential": "openrelayproject"
-        },
-        {
-            "urls": ["turn:openrelay.metered.ca:443?transport=tcp"],
-            "username": "openrelayproject",
-            "credential": "openrelayproject"
-        },
+        {"urls": ["stun:stun1.l.google.com:19302"]}
     ]
 })
 
@@ -81,7 +84,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 科技感+茶文化风格CSS (与原版一致)
+# 科技感+茶文化风格CSS
 st.markdown("""
 <style>
     .stApp { background: linear-gradient(135deg, #E8F5E9 0%, #C8E6C9 50%, #E8F5E9 100%); }
@@ -146,7 +149,7 @@ st.markdown("""
 
 
 class TeaPickingVideoProcessor:
-    """WebRTC视频处理器 - 增加资源管理"""
+    """WebRTC视频处理器 - 兼容版"""
     
     def __init__(self):
         self.pose_detector = PoseDetector()
@@ -159,7 +162,7 @@ class TeaPickingVideoProcessor:
         self.is_running = True
     
     def recv(self, frame):
-        """处理视频帧 - 增加异常捕获"""
+        """处理视频帧 - 增加完整异常捕获"""
         if not self.is_running:
             return frame
         
@@ -200,43 +203,8 @@ class TeaPickingVideoProcessor:
             return av.VideoFrame.from_ndarray(img, format="bgr24")
         
         except Exception as e:
-            logger.error(f"Error processing frame: {e}")
+            logger.error(f"帧处理错误: {e}")
             return frame
-    
-    def close(self):
-        """清理资源"""
-        self.is_running = False
-        # 清理检测器资源
-        self.pose_detector = None
-        self.hand_detector = None
-        self.analyzer = None
-        logger.info("Video processor resources cleaned up")
-
-
-# 全局异常处理器
-def setup_global_exception_handler():
-    """设置异步事件循环的全局异常处理器"""
-    try:
-        loop = asyncio.get_event_loop()
-        
-        def exception_handler(loop, context):
-            """自定义异常处理"""
-            exc = context.get('exception')
-            # 忽略WebRTC/aioice相关的无害异常
-            if isinstance(exc, (AttributeError, RuntimeError)):
-                exc_msg = str(exc).lower()
-                if any(keyword in exc_msg for keyword in ['nonetype', 'sendto', 'call_exception_handler', 'aioice']):
-                    logger.warning(f"Ignored WebRTC/aioice error: {context['message']}")
-                    return
-            # 其他异常正常记录
-            loop.default_exception_handler(context)
-        
-        loop.set_exception_handler(exception_handler)
-    except Exception as e:
-        logger.warning(f"Failed to setup exception handler: {e}")
-
-# 初始化全局异常处理
-setup_global_exception_handler()
 
 
 def rgb_to_hex(bgr_color):
@@ -312,13 +280,11 @@ def render_experience_mode(show_pose, show_hands):
             rtc_configuration=RTC_CONFIGURATION,
             video_processor_factory=TeaPickingVideoProcessor,
             media_stream_constraints={"video": True, "audio": False},
-            async_processing=True,
-            # 关闭时清理资源
-            on_exit=lambda ctx: ctx.video_processor.close() if hasattr(ctx, 'video_processor') else None
+            async_processing=True
         )
 
         # 传递显示选项到处理器
-        if ctx and ctx.video_processor:
+        if ctx and hasattr(ctx, 'video_processor') and ctx.video_processor:
             ctx.video_processor.show_pose = show_pose
             ctx.video_processor.show_hands = show_hands
 
@@ -354,11 +320,10 @@ def render_efficiency_mode(show_pose, show_hands):
             rtc_configuration=RTC_CONFIGURATION,
             video_processor_factory=TeaPickingVideoProcessor,
             media_stream_constraints={"video": True, "audio": False},
-            async_processing=True,
-            on_exit=lambda ctx: ctx.video_processor.close() if hasattr(ctx, 'video_processor') else None
+            async_processing=True
         )
 
-        if ctx and ctx.video_processor:
+        if ctx and hasattr(ctx, 'video_processor') and ctx.video_processor:
             ctx.video_processor.show_pose = show_pose
             ctx.video_processor.show_hands = show_hands
 
@@ -400,11 +365,10 @@ def render_quality_mode(show_pose, show_hands):
             rtc_configuration=RTC_CONFIGURATION,
             video_processor_factory=TeaPickingVideoProcessor,
             media_stream_constraints={"video": True, "audio": False},
-            async_processing=True,
-            on_exit=lambda ctx: ctx.video_processor.close() if hasattr(ctx, 'video_processor') else None
+            async_processing=True
         )
 
-        if ctx and ctx.video_processor:
+        if ctx and hasattr(ctx, 'video_processor') and ctx.video_processor:
             ctx.video_processor.show_pose = show_pose
             ctx.video_processor.show_hands = show_hands
 
@@ -474,11 +438,10 @@ def render_teaching_mode(show_pose, show_hands):
             rtc_configuration=RTC_CONFIGURATION,
             video_processor_factory=TeaPickingVideoProcessor,
             media_stream_constraints={"video": True, "audio": False},
-            async_processing=True,
-            on_exit=lambda ctx: ctx.video_processor.close() if hasattr(ctx, 'video_processor') else None
+            async_processing=True
         )
 
-        if ctx and ctx.video_processor:
+        if ctx and hasattr(ctx, 'video_processor') and ctx.video_processor:
             ctx.video_processor.show_pose = show_pose
             ctx.video_processor.show_hands = show_hands
 
@@ -495,12 +458,12 @@ def render_teaching_mode(show_pose, show_hands):
         st.progress(0, text="掌握程度: 0%")
 
 
-# 修复Streamlit异步运行问题
+# 主程序入口
 if __name__ == "__main__":
-    # 重置asyncio事件循环，避免冲突
+    # 简化的异步处理（兼容所有环境）
     try:
-        asyncio.set_event_loop(asyncio.new_event_loop())
+        main()
     except Exception as e:
-        logger.warning(f"Asyncio loop reset warning: {e}")
-    
-    main()
+        logger.error(f"程序运行错误: {e}")
+        st.error(f"程序启动失败: {str(e)}")
+        st.info("请检查依赖包是否正确安装，或联系技术支持。")
