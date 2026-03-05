@@ -19,11 +19,21 @@ from core.hand_detector import HandDetector
 from core.action_analyzer import TeaPickingAnalyzer
 from utils.helpers import get_score_color, get_score_level, draw_chinese_text
 
-# WebRTC配置
+# WebRTC配置 - 添加TURN服务器
 RTC_CONFIGURATION = RTCConfiguration({
     "iceServers": [
         {"urls": ["stun:stun.l.google.com:19302"]},
         {"urls": ["stun:stun1.l.google.com:19302"]},
+        {
+            "urls": ["turn:openrelay.metered.ca:80"],
+            "username": "openrelayproject",
+            "credential": "openrelayproject"
+        },
+        {
+            "urls": ["turn:openrelay.metered.ca:443"],
+            "username": "openrelayproject",
+            "credential": "openrelayproject"
+        },
     ]
 })
 
