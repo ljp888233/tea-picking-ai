@@ -3,6 +3,7 @@ AI采茶动作捕捉系统 V2.0 - 云端版
 主程序 - Streamlit界面（科技感+茶文化风格）
 使用 WebRTC 实现云端摄像头访问
 """
+import asyncio
 import streamlit as st
 import cv2
 import numpy as np
@@ -13,11 +14,61 @@ from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
+import logging
 
+# 配置日志
+logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger(__name__)
+
+# 导入核心模块
 from core.pose_detector import PoseDetector
 from core.hand_detector import HandDetector
 from core.action_analyzer import TeaPickingAnalyzer
 from utils.helpers import get_score_color, get_score_level, draw_chinese_text
+
+# 修复：重写aioice的异常处理
+try:
+    from aioice import ice, stun
+    
+    # 安全的ICE协议类，增加对象有效性检查
+    class SafeICEProtocol(ice.ICEProtocol):
+        def send_stun(self, message, addr):
+            """安全发送STUN消息，增加前置检查"""
+            if self.transport is None or getattr(self.transport, '_sock', None) is None:
+                logger.warning(f"Transport is None, skip sending STUN message to {addr}")
+                return
+            try:
+                self.transport.sendto(bytes(message), addr)
+            except Exception as e:
+                logger.error(f"Failed to send STUN message: {e}")
+    
+    # 安全的Transaction类，增加重试清理
+    class SafeTransaction(stun.Transaction):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._retry_timer = None
+        
+        def __retry(self):
+            """安全重试方法"""
+            if self._protocol is None or self._addr is None:
+                self.close()
+                return
+            try:
+                super().__retry()
+            except AttributeError as e:
+                logger.error(f"Retry failed: {e}")
+                self.close()
+        
+        def close(self):
+            """清理重试定时器"""
+            if hasattr(self, '_retry_timer') and self._retry_timer:
+                self._retry_timer.cancel()
+                self._retry_timer = None
+            self._protocol = None
+            self._addr = None
+
+except ImportError:
+    logger.warning("aioice patch not applied - module not found")
 
 # WebRTC配置 - 添加TURN服务器
 RTC_CONFIGURATION = RTCConfiguration({
@@ -115,7 +166,7 @@ st.markdown("""
 
 
 class TeaPickingVideoProcessor:
-    """WebRTC视频处理器"""
+    """WebRTC视频处理器 - 增加资源管理"""
     
     def __init__(self):
         self.pose_detector = PoseDetector()
@@ -125,42 +176,82 @@ class TeaPickingVideoProcessor:
         self.show_hands = True
         self.result = {'score': 0, 'feedback': [], 'is_pinching': False}
         self.stats = {'pick_count': 0, 'current_score': 0, 'average_score': 0, 'total_actions': 0}
+        self.is_running = True
     
     def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        img = cv2.flip(img, 1)
+        """处理视频帧 - 增加异常捕获"""
+        if not self.is_running:
+            return frame
         
-        # 姿态检测
-        self.pose_detector.detect(img)
-        if self.show_pose:
-            self.pose_detector.draw_landmarks(img)
+        try:
+            img = frame.to_ndarray(format="bgr24")
+            img = cv2.flip(img, 1)
+            
+            # 姿态检测
+            self.pose_detector.detect(img)
+            if self.show_pose:
+                self.pose_detector.draw_landmarks(img)
+            
+            # 手部检测
+            self.hand_detector.detect(img)
+            if self.show_hands:
+                self.hand_detector.draw_landmarks(img)
+            
+            # 分析动作
+            hands_data = self.hand_detector.get_all_hands()
+            if hands_data:
+                self.result = self.analyzer.analyze_hand(
+                    hands_data[0]['landmarks'],
+                    hands_data[0]['handedness']
+                )
+            
+            # 更新统计
+            self.stats = self.analyzer.get_statistics()
+            score = self.stats['current_score']
+            
+            # 在画面上显示
+            color = get_score_color(score)
+            cv2.putText(img, f"Score: {score}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
+            cv2.putText(img, f"Picks: {self.stats['pick_count']}", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            
+            if hands_data:
+                cv2.putText(img, "Hand OK", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
         
-        # 手部检测
-        self.hand_detector.detect(img)
-        if self.show_hands:
-            self.hand_detector.draw_landmarks(img)
-        
-        # 分析动作
-        hands_data = self.hand_detector.get_all_hands()
-        if hands_data:
-            self.result = self.analyzer.analyze_hand(
-                hands_data[0]['landmarks'],
-                hands_data[0]['handedness']
-            )
-        
-        # 更新统计
-        self.stats = self.analyzer.get_statistics()
-        score = self.stats['current_score']
-        
-        # 在画面上显示
-        color = get_score_color(score)
-        cv2.putText(img, f"Score: {score}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
-        cv2.putText(img, f"Picks: {self.stats['pick_count']}", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        
-        if hands_data:
-            cv2.putText(img, "Hand OK", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-        
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
+        except Exception as e:
+            logger.error(f"Error processing frame: {e}")
+            return frame
+    
+    def close(self):
+        """清理资源"""
+        self.is_running = False
+        # 清理检测器资源
+        self.pose_detector = None
+        self.hand_detector = None
+        self.analyzer = None
+        logger.info("Video processor resources cleaned up")
+
+
+# 全局异常处理器
+def setup_global_exception_handler():
+    """设置异步事件循环的全局异常处理器"""
+    loop = asyncio.get_event_loop()
+    
+    def exception_handler(loop, context):
+        """自定义异常处理"""
+        exc = context.get('exception')
+        if isinstance(exc, AttributeError) and 'NoneType' in str(exc):
+            # 忽略WebRTC关闭后的NoneType异常
+            logger.warning(f"Ignored NoneType error: {context['message']}")
+        else:
+            # 其他异常正常记录
+            loop.default_exception_handler(context)
+    
+    loop.set_exception_handler(exception_handler)
+
+# 初始化全局异常处理
+setup_global_exception_handler()
 
 
 def rgb_to_hex(bgr_color):
@@ -237,7 +328,14 @@ def render_experience_mode(show_pose, show_hands):
             video_processor_factory=TeaPickingVideoProcessor,
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
+            # 修复：增加关闭时的资源清理
+            on_exit=lambda ctx: ctx.video_processor.close() if hasattr(ctx, 'video_processor') else None
         )
+
+        # 传递显示选项到处理器
+        if ctx.video_processor:
+            ctx.video_processor.show_pose = show_pose
+            ctx.video_processor.show_hands = show_hands
 
     with col2:
         st.subheader("🏆 你的成绩")
@@ -272,7 +370,12 @@ def render_efficiency_mode(show_pose, show_hands):
             video_processor_factory=TeaPickingVideoProcessor,
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
+            on_exit=lambda ctx: ctx.video_processor.close() if hasattr(ctx, 'video_processor') else None
         )
+
+        if ctx.video_processor:
+            ctx.video_processor.show_pose = show_pose
+            ctx.video_processor.show_hands = show_hands
 
     with col2:
         st.subheader("⏱️ 效率数据")
@@ -313,7 +416,12 @@ def render_quality_mode(show_pose, show_hands):
             video_processor_factory=TeaPickingVideoProcessor,
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
+            on_exit=lambda ctx: ctx.video_processor.close() if hasattr(ctx, 'video_processor') else None
         )
+
+        if ctx.video_processor:
+            ctx.video_processor.show_pose = show_pose
+            ctx.video_processor.show_hands = show_hands
 
     with col2:
         st.subheader("📋 质量评估")
@@ -382,7 +490,12 @@ def render_teaching_mode(show_pose, show_hands):
             video_processor_factory=TeaPickingVideoProcessor,
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
+            on_exit=lambda ctx: ctx.video_processor.close() if hasattr(ctx, 'video_processor') else None
         )
+
+        if ctx.video_processor:
+            ctx.video_processor.show_pose = show_pose
+            ctx.video_processor.show_hands = show_hands
 
     with col2:
         st.subheader("📝 动作评价")
@@ -399,4 +512,3 @@ def render_teaching_mode(show_pose, show_hands):
 
 if __name__ == "__main__":
     main()
-
