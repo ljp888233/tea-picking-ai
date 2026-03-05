@@ -6,5 +6,5 @@ numpy==1.26.4
 pandas>=2.0.0
 plotly>=5.18.0
 Pillow>=10.0.0
-av==10.0.0
-aiortc==1.5.0
+av
+aiortc
