@@ -15,60 +15,40 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 import logging
+import warnings
+
+# 忽略aioice相关警告
+warnings.filterwarnings("ignore", category=Warning, module="aioice")
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="asyncio")
 
 # 配置日志
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # 导入核心模块
-from core.pose_detector import PoseDetector
-from core.hand_detector import HandDetector
-from core.action_analyzer import TeaPickingAnalyzer
-from utils.helpers import get_score_color, get_score_level, draw_chinese_text
-
-# 修复：重写aioice的异常处理
 try:
-    from aioice import ice, stun
-    
-    # 安全的ICE协议类，增加对象有效性检查
-    class SafeICEProtocol(ice.ICEProtocol):
-        def send_stun(self, message, addr):
-            """安全发送STUN消息，增加前置检查"""
-            if self.transport is None or getattr(self.transport, '_sock', None) is None:
-                logger.warning(f"Transport is None, skip sending STUN message to {addr}")
-                return
-            try:
-                self.transport.sendto(bytes(message), addr)
-            except Exception as e:
-                logger.error(f"Failed to send STUN message: {e}")
-    
-    # 安全的Transaction类，增加重试清理
-    class SafeTransaction(stun.Transaction):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self._retry_timer = None
-        
-        def __retry(self):
-            """安全重试方法"""
-            if self._protocol is None or self._addr is None:
-                self.close()
-                return
-            try:
-                super().__retry()
-            except AttributeError as e:
-                logger.error(f"Retry failed: {e}")
-                self.close()
-        
-        def close(self):
-            """清理重试定时器"""
-            if hasattr(self, '_retry_timer') and self._retry_timer:
-                self._retry_timer.cancel()
-                self._retry_timer = None
-            self._protocol = None
-            self._addr = None
-
-except ImportError:
-    logger.warning("aioice patch not applied - module not found")
+    from core.pose_detector import PoseDetector
+    from core.hand_detector import HandDetector
+    from core.action_analyzer import TeaPickingAnalyzer
+    from utils.helpers import get_score_color, get_score_level, draw_chinese_text
+except ImportError as e:
+    logger.warning(f"Core modules import warning: {e}")
+    # 提供降级实现，防止程序崩溃
+    class PoseDetector:
+        def detect(self, img): pass
+        def draw_landmarks(self, img): pass
+    class HandDetector:
+        def detect(self, img): pass
+        def draw_landmarks(self, img): pass
+        def get_all_hands(self): return []
+    class TeaPickingAnalyzer:
+        def analyze_hand(self, landmarks, handedness):
+            return {'score': 0, 'feedback': [], 'is_pinching': False}
+        def get_statistics(self):
+            return {'pick_count': 0, 'current_score': 0, 'average_score': 0, 'total_actions': 0}
+    def get_score_color(score): return (0, 255, 0)
+    def get_score_level(score): return "初级"
+    def draw_chinese_text(img, text, pos, color): pass
 
 # WebRTC配置 - 添加TURN服务器
 RTC_CONFIGURATION = RTCConfiguration({
@@ -236,19 +216,24 @@ class TeaPickingVideoProcessor:
 # 全局异常处理器
 def setup_global_exception_handler():
     """设置异步事件循环的全局异常处理器"""
-    loop = asyncio.get_event_loop()
-    
-    def exception_handler(loop, context):
-        """自定义异常处理"""
-        exc = context.get('exception')
-        if isinstance(exc, AttributeError) and 'NoneType' in str(exc):
-            # 忽略WebRTC关闭后的NoneType异常
-            logger.warning(f"Ignored NoneType error: {context['message']}")
-        else:
+    try:
+        loop = asyncio.get_event_loop()
+        
+        def exception_handler(loop, context):
+            """自定义异常处理"""
+            exc = context.get('exception')
+            # 忽略WebRTC/aioice相关的无害异常
+            if isinstance(exc, (AttributeError, RuntimeError)):
+                exc_msg = str(exc).lower()
+                if any(keyword in exc_msg for keyword in ['nonetype', 'sendto', 'call_exception_handler', 'aioice']):
+                    logger.warning(f"Ignored WebRTC/aioice error: {context['message']}")
+                    return
             # 其他异常正常记录
             loop.default_exception_handler(context)
-    
-    loop.set_exception_handler(exception_handler)
+        
+        loop.set_exception_handler(exception_handler)
+    except Exception as e:
+        logger.warning(f"Failed to setup exception handler: {e}")
 
 # 初始化全局异常处理
 setup_global_exception_handler()
@@ -328,12 +313,12 @@ def render_experience_mode(show_pose, show_hands):
             video_processor_factory=TeaPickingVideoProcessor,
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
-            # 修复：增加关闭时的资源清理
+            # 关闭时清理资源
             on_exit=lambda ctx: ctx.video_processor.close() if hasattr(ctx, 'video_processor') else None
         )
 
         # 传递显示选项到处理器
-        if ctx.video_processor:
+        if ctx and ctx.video_processor:
             ctx.video_processor.show_pose = show_pose
             ctx.video_processor.show_hands = show_hands
 
@@ -373,7 +358,7 @@ def render_efficiency_mode(show_pose, show_hands):
             on_exit=lambda ctx: ctx.video_processor.close() if hasattr(ctx, 'video_processor') else None
         )
 
-        if ctx.video_processor:
+        if ctx and ctx.video_processor:
             ctx.video_processor.show_pose = show_pose
             ctx.video_processor.show_hands = show_hands
 
@@ -419,7 +404,7 @@ def render_quality_mode(show_pose, show_hands):
             on_exit=lambda ctx: ctx.video_processor.close() if hasattr(ctx, 'video_processor') else None
         )
 
-        if ctx.video_processor:
+        if ctx and ctx.video_processor:
             ctx.video_processor.show_pose = show_pose
             ctx.video_processor.show_hands = show_hands
 
@@ -493,7 +478,7 @@ def render_teaching_mode(show_pose, show_hands):
             on_exit=lambda ctx: ctx.video_processor.close() if hasattr(ctx, 'video_processor') else None
         )
 
-        if ctx.video_processor:
+        if ctx and ctx.video_processor:
             ctx.video_processor.show_pose = show_pose
             ctx.video_processor.show_hands = show_hands
 
@@ -510,5 +495,12 @@ def render_teaching_mode(show_pose, show_hands):
         st.progress(0, text="掌握程度: 0%")
 
 
+# 修复Streamlit异步运行问题
 if __name__ == "__main__":
+    # 重置asyncio事件循环，避免冲突
+    try:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+    except Exception as e:
+        logger.warning(f"Asyncio loop reset warning: {e}")
+    
     main()
