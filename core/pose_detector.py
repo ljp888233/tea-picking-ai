@@ -1,5 +1,6 @@
 """
 姿态检测模块 - 使用MediaPipe Pose
+云端优化版 - 强制CPU模式
 """
 import mediapipe as mp
 import cv2
@@ -8,14 +9,14 @@ import cv2
 class PoseDetector:
     """身体姿态检测器"""
     
-    def __init__(self,
+    def __init__(self, 
                  static_image_mode=False,
                  model_complexity=0,
                  min_detection_confidence=0.5,
                  min_tracking_confidence=0.5):
         """
         初始化姿态检测器
-
+        
         Args:
             static_image_mode: 是否为静态图片模式
             model_complexity: 模型复杂度 (0, 1, 2) - 云端默认0避免GPU问题
@@ -25,7 +26,7 @@ class PoseDetector:
         self.mp_pose = mp.solutions.pose
         self.mp_draw = mp.solutions.drawing_utils
         self.mp_drawing_styles = mp.solutions.drawing_styles
-
+        
         self.pose = self.mp_pose.Pose(
             static_image_mode=static_image_mode,
             model_complexity=model_complexity,
