@@ -10,7 +10,7 @@ try:
     import mediapipe as mp
     # 测试 solutions 是否可用
     _ = mp.solutions.pose
-    MEDIAPIPE_AVAILABLE = True
+    model_complexity=0,
 except (ImportError, AttributeError):
     MEDIAPIPE_AVAILABLE = False
 
