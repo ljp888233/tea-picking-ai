@@ -3,10 +3,23 @@
 """
 import cv2
 
+MEDIAPIPE_AVAILABLE = False
+MEDIAPIPE_ERROR = ""
+mp = None
+
 try:
     import mediapipe as mp
+    # 测试 solutions 是否可用
+    _ = mp.solutions.hands
     MEDIAPIPE_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    MEDIAPIPE_ERROR = f"Import: {str(e)[:50]}"
+    MEDIAPIPE_AVAILABLE = False
+except AttributeError as e:
+    MEDIAPIPE_ERROR = f"Attr: {str(e)[:50]}"
+    MEDIAPIPE_AVAILABLE = False
+except Exception as e:
+    MEDIAPIPE_ERROR = f"Other: {str(e)[:50]}"
     MEDIAPIPE_AVAILABLE = False
 
 
@@ -30,24 +43,29 @@ class HandDetector:
             min_tracking_confidence: 最小跟踪置信度
         """
         self.results = None
+        self.mp_hands = None
+        self.mp_draw = None
+        self.mp_drawing_styles = None
+        self.hands = None
 
         if MEDIAPIPE_AVAILABLE:
-            self.mp_hands = mp.solutions.hands
-            self.mp_draw = mp.solutions.drawing_utils
-            self.mp_drawing_styles = mp.solutions.drawing_styles
+            try:
+                self.mp_hands = mp.solutions.hands
+                self.mp_draw = mp.solutions.drawing_utils
+                self.mp_drawing_styles = mp.solutions.drawing_styles
 
-            self.hands = self.mp_hands.Hands(
-                static_image_mode=static_image_mode,
-                max_num_hands=max_num_hands,
-                model_complexity=model_complexity,
-                min_detection_confidence=min_detection_confidence,
-                min_tracking_confidence=min_tracking_confidence
-            )
-        else:
-            self.mp_hands = None
-            self.mp_draw = None
-            self.mp_drawing_styles = None
-            self.hands = None
+                self.hands = self.mp_hands.Hands(
+                    static_image_mode=static_image_mode,
+                    max_num_hands=max_num_hands,
+                    model_complexity=model_complexity,
+                    min_detection_confidence=min_detection_confidence,
+                    min_tracking_confidence=min_tracking_confidence
+                )
+            except Exception:
+                self.mp_hands = None
+                self.mp_draw = None
+                self.mp_drawing_styles = None
+                self.hands = None
 
     def detect(self, frame):
         """
@@ -87,6 +105,19 @@ class HandDetector:
                     self.mp_drawing_styles.get_default_hand_connections_style()
                 )
         return frame
+
+    def get_landmarks(self):
+        """
+        获取检测到的手部关键点列表
+
+        Returns:
+            手部关键点列表，如果没有检测到则返回None
+        """
+        if not MEDIAPIPE_AVAILABLE:
+            return None
+        if self.results and self.results.multi_hand_landmarks:
+            return [hand.landmark for hand in self.results.multi_hand_landmarks]
+        return None
 
     def get_all_hands(self):
         """
